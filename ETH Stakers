@@ -1,0 +1,89 @@
+WITH total_deposited AS (
+    SELECT SUM(amount_staked)-SUM(amount_full_withdrawn) AS amount_staked
+    FROM query_2393816
+    )
+
+, last_deposits AS (
+    SELECT CASE WHEN entity IS NULL THEN 'Unidentified' ELSE entity END AS entity
+    , CAST(year(MAX(block_time)) AS varchar) || '-'
+        || lpad(CAST(month(MAX(block_time)) AS varchar), 2, '00') || '-'
+        || lpad(CAST(day(MAX(block_time)) AS varchar), 2, '00')
+        AS last_deposit
+    FROM query_2393816
+    WHERE amount_staked > 0 
+    GROUP BY 1
+    )
+
+, last_withdrawals AS (
+    SELECT CASE WHEN entity IS NULL THEN 'Unidentified' ELSE entity END AS entity
+    , CAST(year(MAX(block_time)) AS varchar) || '-'
+        || lpad(CAST(month(MAX(block_time)) AS varchar), 2, '00') || '-'
+        || lpad(CAST(day(MAX(block_time)) AS varchar), 2, '00')
+        AS last_withdrawal
+    FROM query_2393816
+    WHERE amount_full_withdrawn > 0 
+    GROUP BY 1
+    )
+
+, dataset AS (
+    SELECT CASE WHEN q.entity IS NULL THEN 'Unidentified' ELSE q.entity END AS entity
+    , CASE WHEN q.entity_category IS NULL THEN 'Unidentified' ELSE q.entity_category END AS entity_category
+    , SUM(q.amount_staked-q.amount_full_withdrawn) AS amount_staked
+    , SUM(q.amount_staked-q.amount_full_withdrawn) FILTER (WHERE q.entity IS NOT NULL) AS amount_staked_sorting
+    , SUM(q.amount_partial_withdrawn) AS earned_rewards
+    , SUM(q.amount_staked-q.amount_full_withdrawn)/32 AS validators
+    FROM query_2393816 q
+    GROUP BY 1, 2
+    )
+
+, one_week_back AS (
+    SELECT CASE WHEN q.entity IS NULL THEN 'Unidentified' ELSE q.entity END AS entity
+    , SUM(q.amount_staked-amount_full_withdrawn) AS amount_staked
+    FROM query_2393816 q
+    WHERE block_time < NOW() - interval '7' day
+    GROUP BY 1
+    )
+
+, one_month_back AS (
+    SELECT CASE WHEN q.entity IS NULL THEN 'Unidentified' ELSE q.entity END AS entity
+    , SUM(q.amount_staked)-SUM(amount_full_withdrawn) AS amount_staked
+    FROM query_2393816 q
+    WHERE block_time < NOW() - interval '1' month
+    GROUP BY 1
+    )
+
+, six_months_back AS (
+    SELECT CASE WHEN q.entity IS NULL THEN 'Unidentified' ELSE q.entity END AS entity
+    , SUM(q.amount_staked-amount_full_withdrawn) AS amount_staked
+    FROM query_2393816 q
+    WHERE block_time < NOW() - interval '6' month
+    GROUP BY 1
+    )
+
+SELECT CASE WHEN d.entity IS NOT NULL AND d.entity NOT IN ('Other Solo Stakers', 'Unidentified') THEN ROW_NUMBER() OVER (ORDER BY d.amount_staked_sorting DESC) END AS ranking
+, CASE WHEN d.entity = 'Kiln' THEN get_href('https://x.com/Kiln_finance', d.entity)
+    WHEN d.entity = 'Diva (Pre-launch)' THEN get_href('https://x.com/divastaking', d.entity)
+    WHEN d.entity = 'Swell (Pre-launch)' THEN get_href('https://x.com/swellnetworkio', d.entity)
+    WHEN LENGTH(info.x_username) > 0 THEN get_href('https://x.com/' || info.x_username, d.entity)
+    WHEN d.entity IS NULL THEN 'Unidentified'
+    ELSE d.entity END AS entity
+, d.entity AS entity_just_name
+, CASE WHEN d.entity_category IN ('CEX', 'Solo Staker', 'Staking Pool') THEN d.entity_category || 's' ELSE d.entity_category END entity_category
+, d.amount_staked
+, d.validators
+, d.amount_staked/(SELECT amount_staked FROM total_deposited) AS marketshare
+, ROUND(((d.amount_staked/ow.amount_staked)-1), 3) AS ow_change
+, ROUND(((d.amount_staked/om.amount_staked)-1), 3) AS om_change
+, ROUND(((d.amount_staked/sm.amount_staked)-1), 3) AS sm_change
+, d.earned_rewards
+, ld.last_deposit
+, COALESCE(lw.last_withdrawal, 'Never') AS last_withdrawal
+FROM dataset d
+LEFT JOIN staking_ethereum.info info ON info.entity=d.entity
+INNER JOIN last_deposits ld ON ld.entity=d.entity
+LEFT JOIN last_withdrawals lw ON lw.entity=d.entity
+LEFT JOIN one_week_back ow ON ow.entity=d.entity
+LEFT JOIN one_month_back om ON om.entity=d.entity
+LEFT JOIN six_months_back sm ON sm.entity=d.entity
+WHERE d.amount_staked > 0
+ORDER BY 1 NULLS LAST
